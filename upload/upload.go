@@ -1,41 +1,85 @@
 package main
 
 import (
-	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 )
 
-func checkIfExists(filename string) error {
-	fileinfo, err := os.Stat(filename)
+type FileInfo struct {
+	name string
+	size int64
+  dir  bool
+}
+
+func (f FileInfo) ToJson() string {
+  dir := "false"
+  if f.dir {
+    dir = "true"
+  }
+  return fmt.Sprintf(`{ "name": "%s", "size": %d, "dir": %s}`, f.name, f.size, dir)
+}
+
+func scanDir(s string) []FileInfo {
+	var final []FileInfo
+	entries, err := os.ReadDir(s)
 	if err != nil {
-		return err
-	}
-	if fileinfo.IsDir() {
-		return errors.New("Not a file")
+		return final
 	}
 
+	for _, e := range entries {
+		name := s + "/" + e.Name()
+		if e.IsDir() {
+      final = append(final, FileInfo{name, -1, true})
+			final = append(final, scanDir(name)...)
+			continue
+		}
+
+		info, err := e.Info()
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+
+		final = append(final, FileInfo{name, info.Size(), false})
+	}
+
+	return final
+}
+
+func WriteFull(w io.Writer, p []byte) error {
+	for len(p) > 0 {
+		n, err := w.Write(p)
+		if err != nil {
+			return err
+		}
+		p = p[n:]
+	}
 	return nil
 }
+
 func main() {
-	if len(os.Args) < 2 {
-		log.Fatal(os.Args[0])
-	}
-	filename := os.Args[1]
-	fileErr := checkIfExists(filename)
-	if fileErr != nil {
-		log.Fatal(fileErr)
-	}
+	log.Println("Serving")
+	http.HandleFunc("/status/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("Content-Type", "application/json")
+		ent := scanDir(".")
 
-  log.Println("Serving")
-	http.HandleFunc("/", ServeFile(filename))
+		io.WriteString(w, `{ "values" : [`)
+		defer io.WriteString(w, `]}`)
+		for i, e := range ent {
+			if i > 0 {
+				w.Write([]byte(","))
+			}
+			io.WriteString(w, e.ToJson())
+		}
+	})
+
+	http.HandleFunc("/download/", func(w http.ResponseWriter, r *http.Request) {
+		loc := strings.TrimPrefix(r.URL.Path, "/download/")
+		http.ServeFile(w, r, loc)
+	})
 	log.Fatal(http.ListenAndServe(":8000", nil))
-}
-
-func ServeFile(filename string) func(http.ResponseWriter, *http.Request){
-  return func (w http.ResponseWriter, r *http.Request) {
-    log.Println("Connection")
-    http.ServeFile(w, r, filename)
-  }
 }
